@@ -174,10 +174,10 @@ def add_id3(filename):
     artist = ' '.join(dframe[dframe['label'].eq('a')]['str'])
     title = ' '.join(dframe[dframe['label'].eq('t')]['str'])
     if artist and title:
-        #mp3 = mutagen.id3.ID3(filename)
-        #mp3.add(mutagen.id3.TPE1(encoding=3, text=artist))
-        #mp3.add(mutagen.id3.TIT2(encoding=3, text=title))
-        #mp3.save()
+        mp3 = mutagen.id3.ID3(filename)
+        mp3.add(mutagen.id3.TPE1(encoding=3, text=artist))
+        mp3.add(mutagen.id3.TIT2(encoding=3, text=title))
+        mp3.save()
         print("Tagged %r: TPE1=%r TIT2=%r" % (filename, artist, title))
 
 def main():
