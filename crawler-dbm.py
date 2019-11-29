@@ -1,4 +1,6 @@
 #!/usr/bin/python
+"""Collect all trainning data, extract features, and write them into feat.pickle
+"""
 
 import pickle
 import requests
@@ -77,9 +79,9 @@ def gen_urls() -> List[str]:
     '''
     for a in ['a', 'b']:
         for n in range(1, 8):
-            yield "https://mojim.com/twzlh{}_0{}.htm".format(a, n)
+            yield "https://mojim.com/twzlh{}_{:02d}.htm".format(a, n)
     for n in range(1, 34):
-        yield "https://mojim.com/twzlhc_0{}.htm".format(n)
+        yield "https://mojim.com/twzlhc_{:02d}.htm".format(n)
 
 def _get_names() -> List[str]:
     '''Return names of artists from mojim'''
@@ -167,6 +169,16 @@ def features(title: str, names: Set[str], lart, ltit):
     Lo_cnt = 0
     vector = []
     # position offset features, forward and backward
+    #   fzhtok, bzhtok: Ordinality of ideographic tokens, counting from forward and backward
+    #   slen: strlen of the token
+    #   titlen: sum of tokens' char length, i.e., excluding whitespaces
+    #   flen, blen: sum of tokens' char length up to before the current token, counting from forward and backward
+    #   ftok, btok: Ordinality of token in title, counting from forward and backward
+    #   tag: token nature derived from unicode category name
+    #   stopword: boolean, whether the token has stopword as substring
+    #   name: boolean, whether the token is a member of the set of artist names
+    #   dashbefore, dashafter: boolean, whether there is a dash-like token anywhere before or after
+    #   various quotes: boolean, whether the token is inside that kind of quote
     for i, (t, s) in enumerate(tagstr):
         vector.append(dict(
             str=s, tag=t, ftok=i, flen=strlen, slen=len(s),
@@ -179,7 +191,7 @@ def features(title: str, names: Set[str], lart, ltit):
     for tok in vector:
         tok.update({
             'titlen': strlen,
-            'btok': len(vector)-1-tok['ftok'],
+            'btok': len(vector) - 1 - tok['ftok'],
             'blen': strlen - len(tok['str']) - tok['flen'],
         })
         if 'fzhtok' in tok:
@@ -212,6 +224,9 @@ def features(title: str, names: Set[str], lart, ltit):
             tok['label'] = 'a'
         elif tok in ltit:
             tok['label'] = 't'
+    return vector
+
+def printvectors(vector):
     print("[")
     for tok in vector:
         print("\t{},".format(tok))
@@ -220,8 +235,8 @@ def features(title: str, names: Set[str], lart, ltit):
 def main():
     names = set(get_names())
     titles = get_titles()
-    for title in titles:
-        features(title.strip(), names, lart, ltit)
+    feat = [features(title.strip(), names, lart, ltit) for title in titles]
+    pickle.dump(feat, open("feat.pickle", "wb"))
 
 if __name__ == '__main__':
     main()

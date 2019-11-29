@@ -1,110 +1,26 @@
 #!/usr/bin/python
 
+"""Deploy model of classifier: Takes MP3 file list from command line, run the filename through the classifer
+engine to determine artist name and song title, if found, then add as ID3 tags
+
+The feature extraction functions must be same as crawler-dbm.py as those are used to train the classifier
+"""
+
+import argparse
+import fileinput
+import functools
+import os.path
 import pickle
-import requests
+import re
 import unicodedata
 from typing import List, Set, Tuple, Iterable
 
-import bsddb3
-import parsel
-
-from lart import lart
-from ltit import ltit
-
-# Berkeley DB for memoization
-BSDDB = 'memo.db'
-
-class bdbwrapper:
-    '''A wrapper to Berkeley DB, which the open and close of file is hidden
-    Usage:
-        Write:
-            b = bsdwrapper(filename)
-            b.put(key, value)
-        Read:
-            b = bsdwrapper(filename)
-            cur = b.cursor()
-            rec = cur.first()
-            while rec:
-                print(rec)  # (key, value)-tuple
-                rec = cur.next()
-        Look up:
-            b = bsdwrapper(filename)
-            value = b.get(key)  # None if key not found
-        Delete:
-            b = bsdwrapper(filename)
-            b.delete(key)
-    '''
-    def __init__(self, dbfile):
-        self.db = bsddb3.db.DB()
-        # open file, create if not exists, and use hash index
-        self.db.open(dbfile, None, bsddb3.db.DB_HASH, bsddb3.db.DB_CREATE)
-    def __getattr__(self, name):
-        return getattr(self.db, name)
-    def __del__(self):
-        self.db.close()
-
-def memoize(db):
-    '''memoization decorator to use Berkeley DB
-
-    Args:
-        db: Instance of bsdwrapper object
-    '''
-    def _deco(func):
-        def _func(*arg, **kwargs):
-            key = pickle.dumps([func.__qualname__, arg, kwargs])
-            val = db.get(key)
-            if val is None:
-                val = func(*arg, **kwargs)
-                db.put(key, pickle.dumps(val))
-            else:
-                val = pickle.loads(val)
-            return val
-        return _func
-    return _deco
-
-wrapper = bdbwrapper(BSDDB)
-
-@memoize(wrapper)
-def curl(url):
-    '''Retrieve from a URL and return the content body
-    '''
-    return requests.get(url).text
-
-def gen_urls() -> List[str]:
-    '''Return urls as strings for the artist names from mojim. Example URLs:
-        https://mojim.com/twzlha_01.htm
-        https://mojim.com/twzlha_07.htm
-        https://mojim.com/twzlhb_01.htm
-        https://mojim.com/twzlhb_07.htm
-        https://mojim.com/twzlhc_01.htm
-        https://mojim.com/twzlhc_33.htm
-    '''
-    for a in ['a', 'b']:
-        for n in range(1, 8):
-            yield "https://mojim.com/twzlh{}_{:02d}.htm".format(a, n)
-    for n in range(1, 34):
-        yield "https://mojim.com/twzlhc_{:02d}.htm".format(n)
-
-def _get_names() -> List[str]:
-    '''Return names of artists from mojim'''
-    for url in gen_urls():
-        html = curl(url)
-        selector = parsel.Selector(html)
-        titles = selector.xpath("//ul[@class='s_listA']/li/a/@title").getall()
-        for t in titles:
-            name, _ = t.strip().rsplit(' ', 1)
-            yield name
-
-# @memoize(wrapper)
-def get_names() -> List[str]:
-    '''Return a long list of names'''
-    return list(_get_names())
-
-@memoize(wrapper)
-def get_titles() -> List[str]:
-    with open("titles.txt") as fp:
-        lines = fp.readlines()
-    return lines
+import pandas as pd
+import numpy as np
+import mutagen.id3
+from keras.models import load_model
+from keras.layers import Dense, Dropout
+from keras.optimizers import SGD, Adam
 
 def condense(tagged: Iterable[Tuple[str, str]]) -> Iterable[Tuple[str, str]]:
     "Aggregate pairs of the same tag"
@@ -228,17 +144,53 @@ def features(title: str, names: Set[str], lart, ltit):
             tok['label'] = 't'
     return vector
 
-def printvectors(vector):
-    print("[")
-    for tok in vector:
-        print("\t{},".format(tok))
-    print("],")
+@functools.lru_cache()
+def get_engine():
+    clf = load_model("keras-trained.h5")
+    label, incol = pickle.load(open("keras-trained.incol.pickle", "rb"))
+    return label, incol, clf
+
+def add_id3(filename):
+    '''Add id3 tags to a MP3 file, if possible'''
+    basename = os.path.basename(filename)
+    if not basename.lower().endswith(".mp3"):
+        return # not MP3, do nothing
+    # build features from title string
+    title = re.sub("-.{10,15}$", "", basename[:-4])  # remove .mp3 suffix and the youtube id
+    featvect = []
+    for feat in features(title, [], [], []):
+        feat['Lstr'] = feat['tag'].startswith('L')
+        featvect.append(feat)
+    dframe = pd.DataFrame(featvect).rename(columns={'《》':"angle", '（）':"paren", '【】':"square", '“”':"quote"})
+    dframe['bracket'] = dframe.filter(['()', 'paren', "''", 'square', 'quote', '[]']).fillna(0).max(axis=1)
+    # load classifier engine and classify
+    label, incol, clf = get_engine()
+    for col in incol:
+        if col not in dframe.columns:
+            dframe[col] = 0
+    dframe[incol] = dframe[incol].fillna(0).astype('int')
+    dframe['label'] = [label[np.argmax(x)] for x in clf.predict(dframe[incol])]
+    # detect artist name and title
+    artist = ' '.join(dframe[dframe['label'].eq('a')]['str'])
+    title = ' '.join(dframe[dframe['label'].eq('t')]['str'])
+    if artist and title:
+        #mp3 = mutagen.id3.ID3(filename)
+        #mp3.add(mutagen.id3.TPE1(encoding=3, text=artist))
+        #mp3.add(mutagen.id3.TIT2(encoding=3, text=title))
+        #mp3.save()
+        print("Tagged %r: TPE1=%r TIT2=%r" % (filename, artist, title))
 
 def main():
-    names = set(get_names())
-    titles = get_titles()
-    feat = [features(title.strip(), names, lart, ltit) for title in titles]
-    pickle.dump(feat, open("feat.pickle", "wb"))
-        
+    parser = argparse.ArgumentParser(
+                description="ID3 tagger",
+                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("mp3files", nargs="*", help="MP3 files to tag")
+    parser.add_argument("-l", "--list", help="Read from file list")
+    args = parser.parse_args()
+    if args.list:
+        args.mp3files += [line.strip("\n") for line in fileinput.input(args.list)]
+    for path in args.mp3files:
+        add_id3(path)
+
 if __name__ == '__main__':
     main()
